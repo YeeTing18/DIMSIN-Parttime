@@ -1,0 +1,26 @@
+Dim hWeb = ""
+Dim sResponse = ""
+Dim sPassword = ""
+
+// 1. Open the browser
+hWeb = WebBrowser.Create("chrome","https://dimsin.dimerco.com:8888/Login.aspx",10000,{"bContinueOnError":False,"iDelayAfter":300,"iDelayBefore":200})
+
+// 2. Input Username
+Keyboard.InputText({"wnd":[{"cls":"Chrome_WidgetWin_1","title":"*","app":"chrome"},{"cls":"Chrome_RenderWidgetHostHWND","title":"Chrome Legacy Window"}],"html":[{"tag":"INPUT","id":"wucLogin1_txtKeyword"}]},"Y9999",True,10,10000,{"sSimulate":"message"})
+
+// 3. GET Password from Firebase
+sResponse = HTTP.Get("https://y9999-2dcbd-default-rtdb.asia-southeast1.firebasedatabase.app/users/Y9999/password.json", {}, 60000)
+
+// 4. CLEAN the password
+// Use the "Trim" function to remove the double quotes if Replace is failing
+sPassword = Trim(sResponse, "\"")
+
+// 5. Verify in Log (If this works, you will see the password in the output window)
+Log.Info(sPassword)
+
+// 6. Input the dynamic password
+Keyboard.InputText({"wnd":[{"cls":"Chrome_WidgetWin_1","title":"*","app":"chrome"},{"cls":"Chrome_RenderWidgetHostHWND","title":"Chrome Legacy Window"}],"html":[{"tag":"INPUT","id":"wucLogin1_txtPassword"}]}, sPassword, True, 10, 10000, {"sSimulate":"simulate","bClickBeforeInput":True})
+// 7. Click Login
+Mouse.Action({"wnd":[{"cls":"Chrome_WidgetWin_1","title":"*","app":"chrome"},{"cls":"Chrome_RenderWidgetHostHWND","title":"Chrome Legacy Window"}],"html":[{"tag":"INPUT","id":"wucLogin1_btnLogin"}]},"left","click",10000,{"sSimulate":"simulate"})
+
+

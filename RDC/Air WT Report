@@ -1,0 +1,155 @@
+CREATE PROCEDURE [dbo].[SP_GetRptData_SIN_Air_WT_Report]
+(
+    @DBStation AS VARCHAR(10) = '',
+    @StartDate AS DATETIME,
+    @EndDate AS DATETIME
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @SQL AS NVARCHAR(MAX);
+    DECLARE @eChainVP AS NVARCHAR(MAX);
+    
+    SET @eChainVP = '';
+    EXEC SP_GetDBName @DBStation, @eChainVP OUTPUT;
+
+    SET @SQL = N'
+    -- 1. Create Temp Table
+    SELECT  
+        C.SourceID, C.StationID, C.InvoiceNo, C.TempSeq, C.InvoiceDate,
+        C.InvoiceAmount, C.Lot, C.ModeCode, C.ProductLine,
+        I.ChargeID, I.SAmount, I.SCurrencyCode
+    INTO #FMOS_INV
+    FROM [' + @eChainVP + '].dbo.FMOPSource C
+    LEFT JOIN [' + @eChainVP + '].dbo.FMInvoiceDetail I
+        ON I.InvoiceNo = C.InvoiceNo
+        AND I.TempSeq = C.TempSeq
+        AND I.StationID = C.StationID
+    WHERE C.ProductLine IN (''AMS'',''3PS'')
+      AND C.IDType = ''H''
+      AND C.ModeCode IN (''AE'',''AI'',''3A'')
+      AND ISNULL(C.InvoiceNo,'''') <> ''''
+      AND RIGHT(C.InvoiceNo,1) <> ''C''
+      AND ISNULL(C.RefInvoiceNo,'''') = ''''
+      AND C.CustomerID IN (154179,166593,131497,167290,254147,241114,278944) 
+      AND C.InvoiceDate BETWEEN @pStartDate AND @pEndDate; -- Fixed Typo
+
+    -- 2. Main Query
+    SELECT C.Lot, ''AE'' AS ''Mode'', ''DIMSIN'' as ''Forwarder'', j.Customercode AS CNEE, h.customercode AS SHPR, G.MAWBNo AS ''Master Inv No.'',
+           CONVERT(varchar(10), C.InvoiceDate, 103) AS ''Invoice Date'', C.InvoiceNo AS ''Invoice no.'',
+           (SELECT TOP 1 CONVERT(varchar(10), ETD, 103) FROM [' + @eChainVP + '].dbo.AECarrierBooking WHERE MAWBID = A.MAWBID AND StationID = A.StationID ORDER BY ETD DESC) AS ''ETDDate'',
+           A.HAWBNo AS ''HAWB'',
+           (SELECT TOP 1 LEFT(OnboardFLT,2) FROM [' + @eChainVP + '].dbo.AECarrierBooking WHERE MAWBID = A.MAWBID AND StationID = A.StationID ORDER BY ETD DESC) AS ''Airline'',
+           (SELECT TOP 1 OnboardFLT FROM [' + @eChainVP + '].dbo.AECarrierBooking WHERE MAWBID = A.MAWBID AND StationID = A.StationID ORDER BY ETD DESC) AS ''FLT NO'',
+           (SELECT TOP 1 CONVERT(varchar(8), ETD, 108) FROM [' + @eChainVP + '].dbo.AECarrierBooking WHERE MAWBID = A.MAWBID AND StationID = A.StationID ORDER BY ETD DESC) AS ''ETD'',
+           (SELECT TOP 1 CONVERT(varchar(8), ETA, 108) FROM [' + @eChainVP + '].dbo.AECarrierBooking WHERE MAWBID = A.MAWBID AND StationID = A.StationID ORDER BY ETA DESC) AS ''ETA'',
+           CASE SPUnit WHEN 0 THEN CONVERT(varchar, A.ActPCS) + '' '' + A.ActPCSUOM ELSE CONVERT(varchar, A.ActPCS) + '' '' + A.ActPCSUOM + '' ''+ CONVERT(VARCHAR, A.SPUnit) + '' '' + A.SPUnitUOM END ''TTL PCS'',
+           A.GWT AS ''TTL G.W'', A.VWT AS ''TTL D.W'', A.CWT AS ''TTL C.W'', LEFT(D.CityCode,2) AS ''ORG Country'', RIGHT(D.CityCode,3) AS ''ORG City'', LEFT(E.CityCode,2) AS ''DES Country'', RIGHT(E.CityCode,3) AS ''DES City'', A.TradeTerm As ''Trade Term'',
+           (SELECT DISTINCT TOP 1 SCurrencyCode FROM #FMOS_INV T2 WHERE T2.InvoiceNo = C.InvoiceNo AND T2.TempSeq = C.TempSeq AND T2.StationID = C.StationID) AS ''Currency'',
+           (SELECT SUM(SAmount) FROM #FMOS_INV T2 WHERE T2.InvoiceNo = C.InvoiceNo AND T2.TempSeq = C.TempSeq AND T2.StationID = C.StationID AND ChargeID = 13) AS ''Freight'',
+           (SELECT SUM(SAmount) FROM #FMOS_INV T2 WHERE T2.InvoiceNo = C.InvoiceNo AND T2.TempSeq = C.TempSeq AND T2.StationID = C.StationID AND ChargeID = 14) AS ''FSC'',
+           (SELECT SUM(SAmount) FROM #FMOS_INV T2 WHERE T2.InvoiceNo = C.InvoiceNo AND T2.TempSeq = C.TempSeq AND T2.StationID = C.StationID AND ChargeID = 15) AS ''ISS'',
+           '''' AS ''PICKUP'',
+           (SELECT SUM(SAmount) FROM #FMOS_INV T2 WHERE T2.InvoiceNo = C.InvoiceNo AND T2.TempSeq = C.TempSeq AND T2.StationID = C.StationID AND ChargeID = 380) AS ''Export LHC'',
+           (SELECT SUM(SAmount) FROM #FMOS_INV T2 WHERE T2.InvoiceNo = C.InvoiceNo AND T2.TempSeq = C.TempSeq AND T2.StationID = C.StationID AND ChargeID = 5) AS ''Import LHC'',
+           (SELECT SUM(SAmount) FROM #FMOS_INV T2 WHERE T2.InvoiceNo = C.InvoiceNo AND T2.TempSeq = C.TempSeq AND T2.StationID = C.StationID AND ChargeID IN (12,21,22,73,257,114,35)) AS ''Other'',
+           '''' AS ''Tax'', InvoiceAmount AS ''Total''
+    FROM [' + @eChainVP + '].dbo.AEHAWB A
+    LEFT JOIN [' + @eChainVP + '].dbo.SMcustomerone B ON B.CustomerID = A.Shipper 
+    LEFT JOIN #FMOS_INV C ON C.SOURCEID = A.ID AND C.StationID = A.StationID AND ProductLine = ''AMS'' AND C.ModeCode = ''AE'' AND RIGHT(ISNULL(C.InvoiceNo,''''),1) <> ''C''
+    LEFT JOIN ReSM..SMCity D ON D.HQID = A.PortOfDEPT 
+    LEFT JOIN ReSM..SMCity E ON E.HQID = A.PortOfDSTN 
+    LEFT JOIN [' + @eChainVP + '].dbo.SMcustomerone F ON F.CustomerID = A.Customer 
+    LEFT JOIN [' + @eChainVP + '].dbo.smcustomerone AS j ON a.cnee = j.customerid
+    LEFT JOIN [' + @eChainVP + '].dbo.smcustomerone AS h ON a.Shipper = h.customerid
+    LEFT JOIN [' + @eChainVP + '].dbo.AEMAWB G ON G.ID = A.MAWBID AND G.StationID = A.StationID 
+    WHERE A.STATUS <> ''VOID''
+      AND A.CUSTOMER IN (154179,166593,131497,167290,241114,278944,254147) 
+      AND C.InvoiceDate BETWEEN @pStartDate AND @pEndDate
+
+    UNION
+
+    SELECT C.Lot, ''AI'' AS ''Mode'', ''DIMSIN'' AS ''Forwarder'', j.Customercode AS CNEE, h.customercode AS SHPR, G.MAWBNo AS ''Master Inv No.'',
+           CONVERT(varchar(10), C.InvoiceDate, 103) AS ''Invoice Date'', C.InvoiceNo AS ''Invoice no.'',
+           (SELECT TOP 1 CONVERT(varchar(10), ETD, 103) FROM [' + @eChainVP + '].dbo.AICarrierBooking WHERE MAWBID = A.MAWBID AND StationID = A.StationID ORDER BY ETD DESC) AS ''ETDDate'',
+           A.HAWBNo AS ''HAWB'',
+           (SELECT TOP 1 LEFT(OnboardFLT,2) FROM [' + @eChainVP + '].dbo.AICarrierBooking WHERE MAWBID = A.MAWBID AND StationID = A.StationID ORDER BY ETD DESC) AS ''Airline'',
+           (SELECT TOP 1 OnboardFLT FROM [' + @eChainVP + '].dbo.AICarrierBooking WHERE MAWBID = A.MAWBID AND StationID = A.StationID ORDER BY ETD DESC) AS ''FLT NO'',
+           (SELECT TOP 1 CONVERT(varchar(8), ETD, 108) FROM [' + @eChainVP + '].dbo.AICarrierBooking WHERE MAWBID = A.MAWBID AND StationID = A.StationID ORDER BY ETD DESC) AS ''ETD'',
+           (SELECT TOP 1 CONVERT(varchar(8), ETA, 108) FROM [' + @eChainVP + '].dbo.AICarrierBooking WHERE MAWBID = A.MAWBID AND StationID = A.StationID ORDER BY ETA DESC) AS ''ETA'',
+           CASE SPUnit WHEN 0 THEN CONVERT(varchar, A.ActPCS) + '' '' + A.ActPCSUOM ELSE CONVERT(varchar, A.ActPCS) + '' '' + A.ActPCSUOM + '' '' + CONVERT(VARCHAR, A.SPUnit) + '' '' + A.SPUnitUOM END ''TTL PCS'',
+           A.GWT AS ''TTL G.W'', A.VWT AS ''TTL D.W'', A.CWT AS ''TTL C.W'', LEFT(D.CityCode,2) AS ''ORG Country'', RIGHT(D.CityCode,3) AS ''ORG City'', LEFT(E.CityCode,2) AS ''DES Country'', RIGHT(E.CityCode,3) AS ''DES City'', A.TradeTerm As ''Trade Term'',
+           (SELECT DISTINCT TOP 1 SCurrencyCode FROM #FMOS_INV T2 WHERE T2.InvoiceNo = C.InvoiceNo AND T2.TempSeq = C.TempSeq AND T2.StationID = C.StationID) AS ''Currency'',
+           (SELECT SUM(SAmount) FROM #FMOS_INV T2 WHERE T2.InvoiceNo = C.InvoiceNo AND T2.TempSeq = C.TempSeq AND T2.StationID = C.StationID AND ChargeID = 13) AS ''Freight'',
+           (SELECT SUM(SAmount) FROM #FMOS_INV T2 WHERE T2.InvoiceNo = C.InvoiceNo AND T2.TempSeq = C.TempSeq AND T2.StationID = C.StationID AND ChargeID = 14) AS ''FSC'',
+           (SELECT SUM(SAmount) FROM #FMOS_INV T2 WHERE T2.InvoiceNo = C.InvoiceNo AND T2.TempSeq = C.TempSeq AND T2.StationID = C.StationID AND ChargeID = 15) AS ''ISS'',
+           '''' AS ''PICKUP'',
+           (SELECT SUM(SAmount) FROM #FMOS_INV T2 WHERE T2.InvoiceNo = C.InvoiceNo AND T2.TempSeq = C.TempSeq AND T2.StationID = C.StationID AND ChargeID = 380) AS ''Export LHC'',
+           (SELECT SUM(SAmount) FROM #FMOS_INV T2 WHERE T2.InvoiceNo = C.InvoiceNo AND T2.TempSeq = C.TempSeq AND T2.StationID = C.StationID AND ChargeID = 5) AS ''Import LHC'',
+           (SELECT SUM(SAmount) FROM #FMOS_INV T2 WHERE T2.InvoiceNo = C.InvoiceNo AND T2.TempSeq = C.TempSeq AND T2.StationID = C.StationID AND ChargeID IN (12,21,22,73,257,114,35)) AS ''Other'',
+           '''' AS ''Tax'', InvoiceAmount AS ''Total''
+    FROM [' + @eChainVP + '].dbo.AIHAWB A
+    LEFT JOIN [' + @eChainVP + '].dbo.SMcustomerone B ON B.CustomerID = A.Shipper 
+    LEFT JOIN #FMOS_INV C ON C.SOURCEID = A.ID AND C.StationID = A.StationID AND ProductLine = ''AMS'' AND C.ModeCode = ''AI'' AND RIGHT(ISNULL(C.InvoiceNo,''''),1) <> ''C''
+    LEFT JOIN ReSM..SMCity D ON D.HQID = A.PortOfDEPT 
+    LEFT JOIN ReSM..SMCity E ON E.HQID = A.PortOfDSTN 
+    LEFT JOIN [' + @eChainVP + '].dbo.smcustomerone AS j ON a.cnee = j.CustomerID
+    LEFT JOIN [' + @eChainVP + '].dbo.smcustomerone AS h ON a.Shipper = h.CustomerID
+    LEFT JOIN [' + @eChainVP + '].dbo.SMcustomerone F ON F.CustomerID = A.Customer 
+    LEFT JOIN [' + @eChainVP + '].dbo.AIMAWB G ON G.ID = A.MAWBID AND G.StationID = A.StationID 
+    WHERE A.STATUS <> ''VOID'' 
+      AND A.CUSTOMER IN (154179,166593,131497,167290,241114,278944,254147) 
+      AND C.InvoiceDate BETWEEN @pStartDate AND @pEndDate
+
+    UNION
+
+    SELECT C.Lot, ''3A'' AS ''Mode'', ''DIMSIN'' AS ''Forwarder'', j.Customercode AS CNEE, h.customercode AS SHPR, A.MasterNo AS ''Master Inv No.'',
+           CONVERT(varchar(10), C.InvoiceDate, 103) AS ''Invoice Date'', C.InvoiceNo AS ''Invoice no.'',
+           (SELECT TOP 1 CONVERT(varchar(10), MilestoneTime, 103) FROM resm..SMMilestoneHistory WHERE keyValue = A.HouseNo AND MilestoneID = ''1100'' ORDER BY ID DESC) AS ''ETDDate'',
+           A.HouseNo AS ''HAWB'', LEFT(OnboardFLT,2) AS ''Airline'', OnboardFLT AS ''FLT NO'',
+           (SELECT TOP 1 CONVERT(varchar(8), MilestoneTime, 108) FROM resm..SMMilestoneHistory WHERE keyValue = A.HouseNo AND MilestoneID = ''1100'' ORDER BY ID DESC) AS ''ETD'',
+           (SELECT TOP 1 CONVERT(varchar(8), MilestoneTime, 108) FROM resm..SMMilestoneHistory WHERE keyValue = A.HouseNo AND MilestoneID = ''1300'' ORDER BY ID DESC) AS ''ETA'',
+           CONVERT(varchar, A.ActPCS) + '' '' + A.ActPCSUOM AS ''TTL PCS'',
+           A.GWT AS ''TTL G.W'', A.VWT AS ''TTL D.W'', A.CWT AS ''TTL C.W'', LEFT(D.CityCode,2) AS ''ORG Country'', RIGHT(D.CityCode,3) AS ''ORG City'', LEFT(E.CityCode,2) AS ''DES Country'', RIGHT(E.CityCode,3) AS ''DES City'', A.TradeTerm As ''Trade Term'',
+           (SELECT DISTINCT TOP 1 SCurrencyCode FROM #FMOS_INV T2 WHERE T2.InvoiceNo = C.InvoiceNo AND T2.TempSeq = C.TempSeq AND T2.StationID = C.StationID) AS ''Currency'',
+           (SELECT SUM(SAmount) FROM #FMOS_INV T2 WHERE T2.InvoiceNo = C.InvoiceNo AND T2.TempSeq = C.TempSeq AND T2.StationID = C.StationID AND ChargeID = 13) AS ''Freight'',
+           (SELECT SUM(SAmount) FROM #FMOS_INV T2 WHERE T2.InvoiceNo = C.InvoiceNo AND T2.TempSeq = C.TempSeq AND T2.StationID = C.StationID AND ChargeID = 14) AS ''FSC'',
+           (SELECT SUM(SAmount) FROM #FMOS_INV T2 WHERE T2.InvoiceNo = C.InvoiceNo AND T2.TempSeq = C.TempSeq AND T2.StationID = C.StationID AND ChargeID = 15) AS ''ISS'',
+           '''' AS ''PICKUP'',
+           (SELECT SUM(SAmount) FROM #FMOS_INV T2 WHERE T2.InvoiceNo = C.InvoiceNo AND T2.TempSeq = C.TempSeq AND T2.StationID = C.StationID AND ChargeID = 380) AS ''Export LHC'',
+           (SELECT SUM(SAmount) FROM #FMOS_INV T2 WHERE T2.InvoiceNo = C.InvoiceNo AND T2.TempSeq = C.TempSeq AND T2.StationID = C.StationID AND ChargeID = 5) AS ''Import LHC'',
+           (SELECT SUM(SAmount) FROM #FMOS_INV T2 WHERE T2.InvoiceNo = C.InvoiceNo AND T2.TempSeq = C.TempSeq AND T2.StationID = C.StationID AND ChargeID IN (12,21,22,73,257,114,35)) AS ''Other'',
+           '''' AS ''Tax'', InvoiceAmount AS ''Total''
+    FROM [' + @eChainVP + '].dbo.TPAIRData A
+    LEFT JOIN [' + @eChainVP + '].dbo.SMcustomerone B ON B.CustomerID = A.Shipper 
+    LEFT JOIN [' + @eChainVP + '].dbo.FMOPSource C ON C.SOURCEID = A.ID AND C.StationID = A.StationID AND ProductLine = ''3PS'' AND IDType = ''H'' AND C.ModeCode = ''3A'' AND ISNULL(InvoiceNo,'''') <> '''' AND RIGHT(InvoiceNo,1) <> ''C'' AND ISNULL(RefInvoiceNo,'''') = ''''
+    LEFT JOIN ReSM..SMCity D ON D.HQID = A.Receipt 
+    LEFT JOIN ReSM..SMCity E ON E.HQID = A.Delivery 
+    LEFT JOIN [' + @eChainVP + '].dbo.SMcustomerone F ON F.CustomerID = A.CustomerID 
+    LEFT JOIN [' + @eChainVP + '].dbo.smcustomerone AS j ON a.cnee = j.CustomerID
+    LEFT JOIN [' + @eChainVP + '].dbo.smcustomerone AS h ON a.Shipper = h.CustomerID
+    WHERE A.LotStatus <> ''VOID'' 
+      AND A.CustomerID IN (154179,166593,131497,167290,241114,278944,254147) 
+      AND C.InvoiceDate BETWEEN @pStartDate AND @pEndDate;
+
+    DROP TABLE #FMOS_INV
+    ';
+
+   EXEC sp_executesql 
+        @SQL, 
+        N'@pStartDate DATETIME, @pEndDate DATETIME', 
+        @pStartDate = @StartDate, 
+        @pEndDate = @EndDate
+    WITH RESULT SETS
+    (
+        (
+            [Lot] VARCHAR(50), [Mode] VARCHAR(10), [Forwarder] VARCHAR(50), [CNEE] VARCHAR(50), [SHPR] VARCHAR(50), [Master Inv No.] VARCHAR(50),
+            [Invoice Date] VARCHAR(10), [Invoice no.] VARCHAR(50), [ETDDate] VARCHAR(10), [HAWB] VARCHAR(50), [Airline] VARCHAR(10),
+            [FLT NO] VARCHAR(20), [ETD] VARCHAR(8), [ETA] VARCHAR(8), [TTL PCS] VARCHAR(100), [TTL G.W] DECIMAL(18,2), [TTL D.W] DECIMAL(18,2),
+            [TTL C.W] DECIMAL(18,2), [ORG Country] VARCHAR(5), [ORG City] VARCHAR(5), [DES Country] VARCHAR(5), [DES City] VARCHAR(5),
+            [Trade Term] VARCHAR(10), [Currency] VARCHAR(10), [Freight] DECIMAL(18,2), [FSC] DECIMAL(18,2), [ISS] DECIMAL(18,2),
+            [PICKUP] VARCHAR(10), [Export LHC] DECIMAL(18,2), [Import LHC] DECIMAL(18,2), [Other] DECIMAL(18,2), [Tax] VARCHAR(10), [Total] DECIMAL(18,2)
+        )
+    );
+END
